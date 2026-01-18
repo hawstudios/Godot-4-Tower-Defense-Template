@@ -111,8 +111,8 @@ Main (Node)
 **Nodes:**
 - `Enemy` (PathFollow2D) - Root
     - `Sprite2D` - visual representation (balloon sprite)
-    - `Area2D` - for projectile collision detection
-      - `CollisionShape2D` - circle/capsule
+    - `HitBox` (Area2D) - tower/projectile collision detection
+      - `HitBoxShape` (CollisionShape2D) - circle shape
 
 **Script:** `scripts/enemies/enemy.gd`
 
@@ -143,8 +143,8 @@ Main (Node)
 - `Tower` (Node2D) - Root
     - `BaseSprite` (Sprite2D) - stationary base
     - `TurretSprite` (Sprite2D) - rotates to aim
-    - `Area2D` (detection radius)
-        - `CollisionShape2D` (circle shape - detection range)
+    - `DetectionArea` (Area2D) - detection radius
+        - `DetectionShape` (CollisionShape2D) - circle shape
     - `FireTimer` (Timer) - controls shoot rate
 
 **Script:** `scripts/towers/tower.gd`
@@ -369,85 +369,97 @@ func die():
 ```gdscript
 extends Node2D
 
-@export var damage = 1
-@export var fire_rate = 1.0  # shots per second
-@export var detection_range = 200.0
+@export var damage: int = 1
+@export var fire_rate: float = 1.0  # shots per second
+@export var detection_range: float = 200.0
 
-@onready var turret = $TurretSprite
-@onready var detection_area = $Area2D
-@onready var fire_timer = $FireTimer
-@onready var projectile_scene = preload("res://scenes/projectiles/projectile.tscn")
+@onready var turret: Sprite2D = $TurretSprite
+@onready var detection_area: Area2D = $DetectionArea # or $Area2D if you kept the old name
+@onready var fire_timer: Timer = $FireTimer
+var projectile_scene: PackedScene = preload("res://scenes/projectiles/projectile.tscn")
 
 var enemies_in_range: Array = []
-var target_enemy: Enemy
+var target_enemy: Node2D = null # Changed type: enemy is PathFollow2D, which extends Node2D
 
 signal fired
 
 func _ready():
-    # Set detection radius
-    var collision_shape = detection_area.get_node("CollisionShape2D")
-    var circle = CircleShape2D.new()
-    circle.radius = detection_range
-    collision_shape.shape = circle
-    
-    # Connect signals
-    detection_area.area_entered.connect(_on_area_entered)
-    detection_area.area_exited.connect(_on_area_exited)
-    
-    # Set fire rate
-    fire_timer.wait_time = 1.0 / fire_rate
-    fire_timer.timeout.connect(_on_fire_timer_timeout)
-    fire_timer.start()
+	# Set detection radius dynamically
+	var collision_shape = detection_area.get_node("DetectionShape")
+	var circle = CircleShape2D.new()
+	circle.radius = detection_range
+	collision_shape.shape = circle
 
-func _process(delta):
-    target_enemy = get_closest_enemy()
-    
-    if target_enemy:
-        # Rotate turret to face target
-        var direction = (target_enemy.global_position - turret.global_position).normalized()
-        turret.rotation = direction.angle()
+	# Connect signals
+	detection_area.area_entered.connect(_on_area_entered)
+	detection_area.area_exited.connect(_on_area_exited)
 
-func _on_area_entered(area):
-    if area is CharacterBody2D:  # It's an enemy
-        enemies_in_range.append(area)
+	# Set fire rate
+	fire_timer.wait_time = 1.0 / fire_rate
+	fire_timer.timeout.connect(_on_fire_timer_timeout)
+	fire_timer.start()
 
-func _on_area_exited(area):
-    if area in enemies_in_range:
-        enemies_in_range.erase(area)
+func _process(_delta: float):
+	target_enemy = get_closest_enemy()
 
-func get_closest_enemy() -> Enemy:
-    var closest = null
-    var min_distance = INF
-    
-    for enemy in enemies_in_range:
-        if not is_instance_valid(enemy):
-            enemies_in_range.erase(enemy)
-            continue
-        
-        var distance = global_position.distance_to(enemy.global_position)
-        if distance < min_distance:
-            min_distance = distance
-            closest = enemy
-    
-    return closest
+	if target_enemy:
+		# Rotate turret to face target
+		turret.look_at(target_enemy.global_position)
+
+func _on_area_entered(area: Area2D):
+	# CHANGED: The 'area' is the enemy's child Area2D (HitBox).
+	# We need to get the enemy node (the parent PathFollow2D).
+	var enemy = area.get_parent()
+	
+	# Verify it's actually an enemy using the group we added in enemy.gd
+	if enemy.is_in_group("enemies"):
+		enemies_in_range.append(enemy)
+
+func _on_area_exited(area: Area2D):
+	var enemy = area.get_parent()
+	if enemy in enemies_in_range:
+		enemies_in_range.erase(enemy)
+
+func get_closest_enemy() -> Node2D:
+	var closest: Node2D = null
+	var min_distance: float = INF
+
+	# Iterate over a copy to safely modify during iteration
+	for enemy in enemies_in_range.duplicate():
+		if not is_instance_valid(enemy):
+			enemies_in_range.erase(enemy)
+			continue
+
+		var distance = global_position.distance_to(enemy.global_position)
+		if distance < min_distance:
+			min_distance = distance
+			closest = enemy
+
+	return closest
 
 func _on_fire_timer_timeout():
-    if target_enemy and is_instance_valid(target_enemy):
-        shoot()
+	if target_enemy and is_instance_valid(target_enemy):
+		shoot()
 
 func shoot():
-    var projectile = projectile_scene.instantiate()
-    
-    # Calculate direction
-    var direction = (target_enemy.global_position - global_position).normalized()
-    
-    # Position and setup
-    projectile.global_position = global_position
-    projectile.direction = direction
-    projectile.damage = damage
-    
-    get_tree().root.get_child(0).get_node("GameWorld/Projectiles").add_child(projectile)
-    fired.emit()
+	var projectile = projectile_scene.instantiate()
+
+	# Calculate direction toward enemy's current position
+	var direction = (target_enemy.global_position - global_position).normalized()
+
+	# Setup projectile
+	projectile.global_position = global_position
+	projectile.direction = direction
+	projectile.damage = damage
+
+	# CHANGED: Get reference to Projectiles container more robustly
+	# Option 1: Use a group (recommended)
+	# get_tree().get_first_node_in_group("projectile_container").add_child(projectile)
+
+	# Option 2: Navigate from the tower's known position in the tree
+	get_parent().get_node("../Projectiles").add_child(projectile)
+	
+	fired.emit()
 ```
 
 ---
