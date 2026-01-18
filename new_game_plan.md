@@ -183,8 +183,8 @@ Main (Node)
 
 **Nodes:**
 - `Projectile` (Area2D) - Root
-    - `Sprite2D` - visual (small circle or bullet)
-    - `CollisionShape2D` (circle)
+    - `PropjectileSprite` (Sprite2D) - visual (small circle or bullet)
+    - `ProjectileShape` (CollisionShape2D) - circle
 
 **Script:** `scripts/projectiles/projectile.gd`
 
@@ -470,28 +470,32 @@ func shoot():
 ```gdscript
 extends Area2D
 
-@export var speed = 400.0
-var direction: Vector2
+@export var speed: float = 400.0
+var direction: Vector2 = Vector2.ZERO
 var damage: int = 1
 
 signal hit
 
 func _ready():
-    area_entered.connect(_on_area_entered)
+	area_entered.connect(_on_area_entered)
 
-func _physics_process(delta):
-    global_position += direction * speed * delta
-    
-    # Remove if off-screen
-    if not get_viewport_rect().has_point(global_position):
-        queue_free()
+func _physics_process(delta: float):
+	global_position += direction * speed * delta
 
-func _on_area_entered(area):
-    if area.is_in_group("enemies"):
-        if area.has_method("take_damage"):
-            area.take_damage(damage)
-        hit.emit()
-        queue_free()
+	# Remove if off-screen
+	if not get_viewport_rect().has_point(global_position):
+		queue_free()
+
+func _on_area_entered(area: Area2D):
+	# CHANGED: 'area' is the enemy's child HitBox (Area2D).
+	# We need the enemy itself (the parent PathFollow2D).
+	var enemy = area.get_parent()
+
+	if enemy.is_in_group("enemies"):
+		if enemy.has_method("take_damage"):
+			enemy.take_damage(damage)
+		hit.emit()
+		queue_free()
 ```
 
 ---
