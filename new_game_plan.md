@@ -10,18 +10,22 @@ A learning project to build a Bloons TD-style tower defense game in Godot using 
 ### Root Scene Architecture
 ```
 Main (Node)
-├── GameWorld (Node2D)
-│   ├── Background (Sprite2D or TileMap)
-│   ├── EnemyPath (Path2D) ← Draw the curve here in the editor
-│   │   └── (Enemies will be added here at runtime)
-│   ├── Towers (Node - container)
-│   ├── Projectiles (Node - container)
-│   └── UI (CanvasLayer)
-│       └── GUI elements
-└── MainMenu (CanvasLayer)
-    ├── Start Button
-    ├── Quit Button
-    └── Title/Instructions
+├── MainMenu (CanvasLayer)
+│   └── MenuPanel (Control)
+│       ├── BackgroundOverlay (ColorRect)
+│       └── ContentContainer (VBoxContainer)
+│           ├── TitleLabel (Label)
+│           ├── InstructionsLabel (Label)
+│           ├── StartButton (Button)
+│           └── QuitButton (Button)
+└── GameWorld (Node2D)
+    ├── Background (Sprite2D or TileMap)
+    ├── EnemyPath (Path2D) ← Draw the curve here in the editor
+    │   └── (Enemies will be added here at runtime)
+    ├── Towers (Node - container)
+    ├── Projectiles (Node - container)
+    └── UI (CanvasLayer)
+        └── GUI elements
 ```
 
 **Why this structure:**
@@ -39,13 +43,14 @@ Main (Node)
 **File:** `scenes/ui/main_menu.tscn`
 
 **Nodes:**
-- `MainMenu` (Control/CanvasLayer)
-    - `VBoxContainer` (layout)
-        - `Label` (Title)
-        - `Label` (Instructions)
-        - `Button` (Start Game)
-        - `Button` (Quit)
-    - `ColorRect` (background overlay)
+- `MainMenu` (CanvasLayer)
+  - `MenuPanel` (Control)
+  - `BackgroundOverlay` (ColorRect) - semi-transparent background
+  - `ContentContainer` (VBoxContainer) - centered layout
+      - `TitleLabel` (Label)
+      - `InstructionsLabel` (Lable)
+      - `StartButton` (Button)
+      - `QuitButton` (Button)
 
 **Script:** `scripts/ui/main_menu.gd`
 - `_on_start_pressed()` → emit signal or call main scene
@@ -224,20 +229,68 @@ Main (Node)
 ```gdscript
 extends Node
 
-@onready var main_menu = $MainMenu
+@onready var main_menu: CanvasLayer = $MainMenu
+
+var game_world: Node2D = null
+var game_world_scene: PackedScene = preload("res://scenes/levels/game_world.tscn")
 
 func _ready():
-    main_menu.start_game.connect(_on_start_game)
-    main_menu.quit_game.connect(_on_quit_game)
+	main_menu.start_game.connect(_on_start_game)
+	main_menu.quit_game.connect(_on_quit_game)
 
 func _on_start_game():
-    main_menu.hide()
-    # Instantiate or show game world
-    var world = preload("res://scenes/levels/game_world.tscn").instantiate()
-    add_child(world)
+	main_menu.hide()
+	
+	# Create game world if it doesn't exist
+	if game_world == null:
+		game_world = game_world_scene.instantiate()
+		game_world.game_over.connect(_on_game_over)
+		add_child(game_world)
 
 func _on_quit_game():
-    get_tree().quit()
+	get_tree().quit()
+
+func _on_game_over():
+	# Clean up game world
+	if game_world:
+		game_world.queue_free()
+		game_world = null
+	
+	# Show menu again
+	main_menu.show()
+
+func return_to_menu():
+	# Call this from pause menu or other places
+	if game_world:
+		game_world.queue_free()
+		game_world = null
+	main_menu.show()
+```
+
+### Main Menu
+**File:** `scripts/ui/main_menu.gd`
+
+**Responsibilities:**
+- TODO - decribe
+
+```gdscript
+extends CanvasLayer
+
+signal start_game
+signal quit_game
+
+@onready var start_button: Button = $MenuPanel/ContentContainer/StartButton
+@onready var quit_button: Button = $MenuPanel/ContentContainer/QuitButton
+
+func _ready():
+	start_button.pressed.connect(_on_start_button_pressed)
+	quit_button.pressed.connect(_on_quit_button_pressed)
+
+func _on_start_button_pressed():
+	start_game.emit()
+
+func _on_quit_button_pressed():
+	quit_game.emit()
 ```
 
 ---
