@@ -255,52 +255,74 @@ func _on_quit_game():
 extends Node2D
 
 @export var enemy_scene: PackedScene
-@export var wave_data: Array # [{count: 5, delay: 0.5}, ...]
+@export var wave_data: Array = [] # [{count: 5, delay: 0.5}, ...]
 
-# CHANGED: Reference the Path2D node instead of a generic container
 @onready var enemy_path: Path2D = $EnemyPath
-@onready var towers_container = $Towers
-@onready var ui = $CanvasLayer/GameUI
+@onready var towers_container: Node = $Towers
+@onready var projectiles_container: Node = $Projectiles
+@onready var ui: Control = $UI/GameUI
 
 var current_wave: int = 0
 var player_health: int = 20
 var current_money: int = 100
-var enemies_alive: int = 0 # Track count manually for reliability
+var enemies_alive: int = 0
+var is_spawning: bool = false # Prevent overlapping spawn calls
 
-signal wave_started
-signal wave_completed
+signal wave_started(wave_index: int)
+signal wave_completed(wave_index: int)
 signal game_over
+signal money_changed(new_amount: int)
+signal health_changed(new_health: int)
 
 func _ready():
+	# Add projectiles container to group for easy access from towers
+	projectiles_container.add_to_group("projectile_container")
+	
+	# Start first wave (or wait for player input)
 	spawn_wave(0)
 
 func spawn_wave(wave_index: int):
+	if is_spawning:
+		return
+	if wave_index >= wave_data.size():
+		print("All waves complete!")
+		return
+
+	is_spawning = true
 	current_wave = wave_index
-	wave_started.emit()
+	wave_started.emit(wave_index)
 
 	var wave = wave_data[wave_index]
-	for i in range(wave.count):
+	var count = wave.get("count", 1)
+	var delay = wave.get("delay", 0.5)
+
+	for i in range(count):
 		var enemy = enemy_scene.instantiate()
 
-		# Connect signals BEFORE adding to tree, using .bind() to pass the enemy reference
+		# Connect signals BEFORE adding to tree
 		enemy.died.connect(_on_enemy_died.bind(enemy))
 		enemy.reached_end.connect(_on_enemy_reached_end.bind(enemy))
 
-		# CHANGED: Add enemy as child of Path2D, not a generic container
 		enemy_path.add_child(enemy)
 		enemies_alive += 1
 
-		# Stagger spawn times (use wave.delay if defined, otherwise default)
-		var delay = wave.get("delay", 0.5)
-		await get_tree().create_timer(delay).timeout
+		# Wait between spawns (except after last enemy)
+		if i < count - 1:
+			await get_tree().create_timer(delay).timeout
 
-func _on_enemy_died(enemy):
-	current_money += enemy.reward
+	is_spawning = false
+
+func _on_enemy_died(enemy: Node):
+	var reward = enemy.reward if "reward" in enemy else 0
+	current_money += reward
+	money_changed.emit(current_money)
 	enemies_alive -= 1
 	_check_wave_complete()
 
-func _on_enemy_reached_end(enemy):
-	player_health -= 1
+func _on_enemy_reached_end(enemy: Node):
+	var damage = 1 # Or enemy.damage if enemies have variable damage
+	player_health -= damage
+	health_changed.emit(player_health)
 	enemies_alive -= 1
 
 	if player_health <= 0:
@@ -309,11 +331,25 @@ func _on_enemy_reached_end(enemy):
 		_check_wave_complete()
 
 func _check_wave_complete():
-	if enemies_alive <= 0:
-		wave_completed.emit()
-		# Optionally start next wave:
-		# if current_wave + 1 < wave_data.size():
-		#     spawn_wave(current_wave + 1)
+	if enemies_alive <= 0 and not is_spawning:
+		wave_completed.emit(current_wave)
+		
+		# Auto-start next wave (or wait for player input)
+		if current_wave + 1 < wave_data.size():
+			# Optional: add delay between waves
+			await get_tree().create_timer(2.0).timeout
+			spawn_wave(current_wave + 1)
+
+func add_money(amount: int):
+	current_money += amount
+	money_changed.emit(current_money)
+
+func spend_money(amount: int) -> bool:
+	if current_money >= amount:
+		current_money -= amount
+		money_changed.emit(current_money)
+		return true
+	return false
 ```
 
 ---
@@ -444,21 +480,17 @@ func _on_fire_timer_timeout():
 func shoot():
 	var projectile = projectile_scene.instantiate()
 
-	# Calculate direction toward enemy's current position
 	var direction = (target_enemy.global_position - global_position).normalized()
 
-	# Setup projectile
 	projectile.global_position = global_position
 	projectile.direction = direction
 	projectile.damage = damage
 
-	# CHANGED: Get reference to Projectiles container more robustly
-	# Option 1: Use a group (recommended)
-	# get_tree().get_first_node_in_group("projectile_container").add_child(projectile)
+	# Use group to find projectiles container (more robust)
+	var container = get_tree().get_first_node_in_group("projectile_container")
+	if container:
+		container.add_child(projectile)
 
-	# Option 2: Navigate from the tower's known position in the tree
-	get_parent().get_node("../Projectiles").add_child(projectile)
-	
 	fired.emit()
 ```
 
@@ -506,31 +538,51 @@ func _on_area_entered(area: Area2D):
 ```gdscript
 extends Control
 
-@onready var health_label = $VBoxContainer/HealthLabel
-@onready var money_label = $VBoxContainer/MoneyLabel
-@onready var wave_label = $VBoxContainer/WaveLabel
+@onready var health_label: Label = $VBoxContainer/HealthLabel
+@onready var money_label: Label = $VBoxContainer/MoneyLabel
+@onready var wave_label: Label = $VBoxContainer/WaveLabel
 
 var game_world: Node2D
 
 func _ready():
-    game_world = get_parent().get_parent()  # Navigate to GameWorld
-    
-    # Connect signals
-    game_world.wave_started.connect(_on_wave_started)
-    game_world.game_over.connect(_on_game_over)
+	game_world = get_parent().get_parent()  # Navigate to GameWorld
 
-func _process(delta):
-    health_label.text = "Health: %d" % game_world.player_health
-    money_label.text = "Money: $%d" % game_world.current_money
-    wave_label.text = "Wave: %d" % game_world.current_wave
+	# Connect signals instead of polling
+	game_world.wave_started.connect(_on_wave_started)
+	game_world.wave_completed.connect(_on_wave_completed)
+	game_world.game_over.connect(_on_game_over)
+	game_world.money_changed.connect(_on_money_changed)
+	game_world.health_changed.connect(_on_health_changed)
 
-func _on_wave_started():
-    # Visual feedback for wave start
-    pass
+	# Set initial values
+	_update_health(game_world.player_health)
+	_update_money(game_world.current_money)
+	_update_wave(game_world.current_wave)
+
+func _update_health(value: int):
+	health_label.text = "Health: %d" % value
+
+func _update_money(value: int):
+	money_label.text = "Money: $%d" % value
+
+func _update_wave(value: int):
+	wave_label.text = "Wave: %d" % (value + 1)  # Display 1-indexed
+
+func _on_wave_started(wave_index: int):
+	_update_wave(wave_index)
+
+func _on_wave_completed(wave_index: int):
+	pass  # Could show "Wave Complete!" message
 
 func _on_game_over():
-    # Show game over screen
-    pass
+	# Show game over screen
+	pass
+
+func _on_money_changed(new_amount: int):
+	_update_money(new_amount)
+
+func _on_health_changed(new_health: int):
+	_update_health(new_health)
 ```
 
 ---
