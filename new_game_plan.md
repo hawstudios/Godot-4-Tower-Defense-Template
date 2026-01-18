@@ -11,9 +11,9 @@ A learning project to build a Bloons TD-style tower defense game in Godot using 
 ```
 Main (Node)
 ├── GameWorld (Node2D)
-│   ├── Background (Sprite2D with tilemap)
-│   ├── TileMap (for path)
-│   ├── Enemies (Node - container)
+│   ├── Background (Sprite2D or TileMap)
+│   ├── EnemyPath (Path2D) ← Draw the curve here in the editor
+│   │   └── (Enemies will be added here at runtime)
 │   ├── Towers (Node - container)
 │   ├── Projectiles (Node - container)
 │   └── UI (CanvasLayer)
@@ -109,10 +109,10 @@ Main (Node)
 **File:** `scenes/enemies/enemy.tscn`
 
 **Nodes:**
-- `Enemy` (CharacterBody2D) - Root
+- `Enemy` (PathFollow2D) - Root
     - `Sprite2D` - visual representation (balloon sprite)
-    - `CollisionShape2D` - circle/capsule
-    - `PathFollow2D` *(optional, for automatic path following)*
+    - `Area2D` - for projectile collision detection
+      - `CollisionShape2D` - circle/capsule
 
 **Script:** `scripts/enemies/enemy.gd`
 
@@ -255,46 +255,65 @@ func _on_quit_game():
 extends Node2D
 
 @export var enemy_scene: PackedScene
-@export var wave_data: Array # [{count: 5, enemy_type: ...}, ...]
+@export var wave_data: Array # [{count: 5, delay: 0.5}, ...]
 
-@onready var enemies_container = $Enemies
+# CHANGED: Reference the Path2D node instead of a generic container
+@onready var enemy_path: Path2D = $EnemyPath
 @onready var towers_container = $Towers
 @onready var ui = $CanvasLayer/GameUI
 
-var current_wave = 0
-var player_health = 20
-var current_money = 100
+var current_wave: int = 0
+var player_health: int = 20
+var current_money: int = 100
+var enemies_alive: int = 0 # Track count manually for reliability
 
 signal wave_started
 signal wave_completed
 signal game_over
 
 func _ready():
-    spawn_wave(0)
+	spawn_wave(0)
 
-func spawn_wave(wave_index):
-    current_wave = wave_index
-    wave_started.emit()
-    
-    var wave = wave_data[wave_index]
-    for i in range(wave.count):
-        var enemy = enemy_scene.instantiate()
-        enemies_container.add_child(enemy)
-        # Stagger spawn times
-        await get_tree().create_timer(0.5).timeout
+func spawn_wave(wave_index: int):
+	current_wave = wave_index
+	wave_started.emit()
+
+	var wave = wave_data[wave_index]
+	for i in range(wave.count):
+		var enemy = enemy_scene.instantiate()
+
+		# Connect signals BEFORE adding to tree, using .bind() to pass the enemy reference
+		enemy.died.connect(_on_enemy_died.bind(enemy))
+		enemy.reached_end.connect(_on_enemy_reached_end.bind(enemy))
+
+		# CHANGED: Add enemy as child of Path2D, not a generic container
+		enemy_path.add_child(enemy)
+		enemies_alive += 1
+
+		# Stagger spawn times (use wave.delay if defined, otherwise default)
+		var delay = wave.get("delay", 0.5)
+		await get_tree().create_timer(delay).timeout
 
 func _on_enemy_died(enemy):
-    enemies_container.remove_child(enemy)
-    current_money += enemy.reward
-    # Check if wave complete
-    if enemies_container.get_child_count() == 0:
-        wave_completed.emit()
+	current_money += enemy.reward
+	enemies_alive -= 1
+	_check_wave_complete()
 
 func _on_enemy_reached_end(enemy):
-    player_health -= 1
-    enemies_container.remove_child(enemy)
-    if player_health <= 0:
-        game_over.emit()
+	player_health -= 1
+	enemies_alive -= 1
+
+	if player_health <= 0:
+		game_over.emit()
+	else:
+		_check_wave_complete()
+
+func _check_wave_complete():
+	if enemies_alive <= 0:
+		wave_completed.emit()
+		# Optionally start next wave:
+		# if current_wave + 1 < wave_data.size():
+		#     spawn_wave(current_wave + 1)
 ```
 
 ---
@@ -303,33 +322,33 @@ func _on_enemy_reached_end(enemy):
 **File:** `scripts/enemies/enemy.gd`
 
 ```gdscript
-extends CharacterBody2D
+extends PathFollow2D
 
-@export var max_health = 3
-@export var speed = 100.0
-@export var reward = 50
+@export var max_health: int = 3
+@export var speed: float = 100.0
+@export var reward: int = 50
 
 var current_health: int
-var path_follow: PathFollow2D
 
 signal died
 signal reached_end
-signal health_changed
+signal health_changed(new_health: int)
 
 func _ready():
     current_health = max_health
-    # Get PathFollow2D node (or path reference)
-    path_follow = get_parent().get_node("PathFollow2D")
+    # Ensure loop is off so progress_ratio stops at 1.0
+    loop = false
+    # Add to group so projectiles can identify us
+    add_to_group("enemies")
 
-func _physics_process(delta):
-    if path_follow:
-        path_follow.progress += speed * delta
-        position = path_follow.global_position
-        
-        # Check if reached end
-        if path_follow.unit_offset >= 1.0:
-            reached_end.emit()
-            queue_free()
+func _physics_process(delta: float):
+    # Move along the path
+    progress += speed * delta
+
+    # Check if reached end of path
+    if progress_ratio >= 1.0:
+        reached_end.emit()
+        queue_free()
 
 func take_damage(amount: int):
     current_health -= amount
