@@ -45,12 +45,12 @@ Main (Node)
 **Nodes:**
 - `MainMenu` (CanvasLayer)
   - `MenuPanel` (Control)
-  - `BackgroundOverlay` (ColorRect) - semi-transparent background
-  - `ContentContainer` (VBoxContainer) - centered layout
-      - `TitleLabel` (Label)
-      - `InstructionsLabel` (Lable)
-      - `StartButton` (Button)
-      - `QuitButton` (Button)
+    - `BackgroundOverlay` (ColorRect) - semi-transparent background
+    - `ContentContainer` (VBoxContainer) - centered layout
+        - `TitleLabel` (Label)
+        - `InstructionsLabel` (Label)
+        - `StartButton` (Button)
+        - `QuitButton` (Button)
 
 **Script:** `scripts/ui/main_menu.gd`
 - `_on_start_pressed()` → emit signal or call main scene
@@ -80,17 +80,20 @@ Main (Node)
     - Helps with collision detection
 
 #### 2. Game Objects Containers
-- `Enemies` (Node)
-    - Container for all enemy instances
-    - Children instantiated at runtime
+
+- `EnemyPath` (Path2D)
+  - Defines the curve enemies follow (draw in editor)
+  - Enemy instances (PathFollow2D) added as children at runtime
+  - Note: This also appears in Background & Map Layer but serves as the enemy container
 
 - `Towers` (Node)
-    - Container for all tower instances
-    - Children instantiated at runtime (or placed in editor)
+  - Container for all tower instances
+  - Children instantiated at runtime (or placed in editor)
 
 - `Projectiles` (Node)
-    - Container for all projectile instances
-    - Children instantiated when towers shoot
+  - Container for all projectile instances
+  - Children instantiated when towers shoot
+  - Add to group "projectile_container" in _ready() for easy access from towers
 
 #### 3. UI Layer
 - `CanvasLayer` (CanvasLayer)
@@ -125,8 +128,7 @@ Main (Node)
 - `max_health: int`
 - `current_health: int`
 - `speed: float`
-- `path: Path2D` (reference to the path)
-- `progress: float` (how far along the path)
+- `reward: int`
 
 **Key Functions:**
 - `_physics_process(delta)` - move along path
@@ -188,7 +190,7 @@ Main (Node)
 
 **Nodes:**
 - `Projectile` (Area2D) - Root
-    - `PropjectileSprite` (Sprite2D) - visual (small circle or bullet)
+    - `ProjectileSprite` (Sprite2D) - visual (small circle or bullet)
     - `ProjectileShape` (CollisionShape2D) - circle
 
 **Script:** `scripts/projectiles/projectile.gd`
@@ -213,6 +215,50 @@ Main (Node)
 - Area2D signals detect collision with enemies
 - Calls `enemy.take_damage()` directly
 - Removes itself after hitting or going off-screen
+
+---
+
+### F. Collision Layers Setup
+
+For Area2D nodes to detect each other, their collision layers and masks must be configured in the Godot editor.
+
+**Understanding Layers vs Masks:**
+- **Layer** = "I exist on this layer" (what the node IS)
+- **Mask** = "I detect things on these layers" (what the node SEES)
+
+**Layer Assignments for This Project:**
+
+| Layer Number | Name | Used By |
+|--------------|------|---------|
+| 1 | towers | Tower DetectionArea |
+| 2 | enemies | Enemy HitBox |
+| 3 | projectiles | Projectile (root Area2D) |
+
+**Node Configuration:**
+
+| Node | Collision Layer | Collision Mask | Why |
+|------|-----------------|----------------|-----|
+| Tower's DetectionArea | 1 | 2 | Exists on layer 1, detects enemies on layer 2 |
+| Enemy's HitBox | 2 | (none) | Exists on layer 2, doesn't need to detect anything |
+| Projectile (Area2D root) | 3 | 2 | Exists on layer 3, detects enemies on layer 2 |
+
+**How to Configure in Editor:**
+1. Select the Area2D node in your scene
+2. In the Inspector, expand the "Collision" section
+3. Click the numbered grid buttons to toggle layers/masks on or off
+4. Layer = top row, Mask = bottom row
+
+**Optional: Name Your Layers**
+For better readability in the editor:
+1. Go to Project → Project Settings → General
+2. Navigate to Layer Names → 2D Physics
+3. Set Layer 1 = "towers", Layer 2 = "enemies", Layer 3 = "projectiles"
+
+**Troubleshooting:**
+If area_entered signals aren't firing:
+- Verify the detecting node's MASK includes the target node's LAYER
+- Both Area2D nodes must have CollisionShape2D children with valid shapes
+- Ensure "Monitorable" and "Monitoring" are enabled on the Area2D (they are by default)
 
 ---
 
@@ -271,7 +317,9 @@ func return_to_menu():
 **File:** `scripts/ui/main_menu.gd`
 
 **Responsibilities:**
-- TODO - decribe
+- display game instructions
+- present button to start a new game
+- present quit button to end the game
 
 ```gdscript
 extends CanvasLayer
@@ -722,7 +770,6 @@ Game Over → Return to main menu
 |---------|---------|-------------|
 | **Node2D** | 2D scene root | Game world, towers, enemies |
 | **Sprite2D** | Display images | All visual elements |
-| **CharacterBody2D** | Physics movement | Enemies, player (if added later) |
 | **Area2D** | Collision detection | Tower detection range, projectiles |
 | **CollisionShape2D** | Shape for collisions | Paired with physics/detection nodes |
 | **Timer** | Time-based events | Tower fire rate, wave delays |
@@ -764,7 +811,7 @@ add_to_group("enemies")
 
 # In projectile.gd
 if area.is_in_group("enemies"):
-    area.take_damage(damage)
+	area.get_parent().take_damage(damage)
 ```
 
 ### Pattern 4: Using @onready for Node References
@@ -783,14 +830,15 @@ if area.is_in_group("enemies"):
 
 ## 9. COMMON ISSUES & SOLUTIONS
 
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Enemies not moving | PathFollow2D not set up | Verify Path2D exists, PathFollow2D references it |
-| Tower not shooting | Area2D detection not working | Check collision layers/masks are compatible |
-| Projectiles passing through enemies | No collision signal connection | Connect `area_entered` signal on projectile |
-| Turret not rotating | Rotation not applied to sprite | Verify turret sprite is separate child node |
-| Game crashes on enemy death | Accessing invalid enemy reference | Use `is_instance_valid()` before accessing |
-| UI not visible | CanvasLayer z-index too low | Increase z-index or move to proper layer |
+| Issue                                    | Cause                                          | Solution                                        |
+|------------------------------------------|------------------------------------------------|-------------------------------------------------|
+| Enemies not moving                       | PathFollow2D not set up                        | Verify Path2D exists, PathFollow2D references it |
+| Tower not shooting                       | Area2D detection not working                   | Check collision layers/masks are compatible     |
+| Projectiles passing through enemies      | No collision signal connection                 | Connect `area_entered` signal on projectile     |
+| Turret not rotating                      | Rotation not applied to sprite                 | Verify turret sprite is separate child node     |
+| Game crashes on enemy death              | Accessing invalid enemy reference              | Use `is_instance_valid()` before accessing      |
+| UI not visible                           | CanvasLayer z-index too low                    | Increase z-index or move to proper layer        |
+| Projectile/Tower does not detect enemies | Checking wrong node (Area2D instead of parent) | use `area.get_parent()` to get the actual enemy |
 
 ---
 
